@@ -109,22 +109,17 @@ func (s *serializer) object(m map[string]any, indent int) (string, error) {
 	return s.blockObjectBraced(m, keys, indent)
 }
 
-// inline-obj = "{" *( key ":" value SP ) "}"
+// inline-obj = "{" key ":" value *( SP key ":" value ) "}"
 func (s *serializer) tryInlineObject(m map[string]any, keys []string) (string, error) {
-	var sb strings.Builder
-	sb.WriteString("{")
+	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		vStr, err := s.value(m[k], 0)
 		if err != nil {
 			return "", err
 		}
-		sb.WriteString(s.key(k))
-		sb.WriteString(":")
-		sb.WriteString(vStr)
-		sb.WriteString(" ")
+		parts = append(parts, s.key(k)+":"+vStr)
 	}
-	sb.WriteString("}")
-	result := sb.String()
+	result := "{" + strings.Join(parts, " ") + "}"
 	if len(result) <= 80 {
 		return result, nil
 	}
@@ -221,45 +216,40 @@ func schemaKeys(arr []any) []string {
 	return keys
 }
 
-// schema-arr = "#[" *( key SP ) "]" NEWLINE *( *SP *( value SP ) NEWLINE )
+// schema-arr = "#[" key *( SP key ) "]" NEWLINE *( *SP value *( SP value ) NEWLINE )
 func (s *serializer) schemaArray(arr []any, keys []string, indent int) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("#[")
-	for _, k := range keys {
-		sb.WriteString(k)
-		sb.WriteString(" ")
-	}
+	sb.WriteString(strings.Join(keys, " "))
 	sb.WriteString("]\n")
 	for _, elem := range arr {
 		m := elem.(map[string]any)
+		rowParts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			vStr, err := s.value(m[k], 0)
 			if err != nil {
 				return "", err
 			}
-			sb.WriteString(vStr)
-			sb.WriteString(" ")
+			rowParts = append(rowParts, vStr)
 		}
+		sb.WriteString(strings.Join(rowParts, " "))
 		sb.WriteString("\n")
 	}
 	result := sb.String()
 	return strings.TrimRight(result, "\n"), nil
 }
 
-// inline-arr = "[" *( value SP ) "]"
+// inline-arr = "[" value *( SP value ) "]"
 func (s *serializer) tryInlineArray(arr []any) (string, error) {
-	var sb strings.Builder
-	sb.WriteString("[")
+	parts := make([]string, 0, len(arr))
 	for _, elem := range arr {
 		vStr, err := s.value(elem, 0)
 		if err != nil {
 			return "", err
 		}
-		sb.WriteString(vStr)
-		sb.WriteString(" ")
+		parts = append(parts, vStr)
 	}
-	sb.WriteString("]")
-	result := sb.String()
+	result := "[" + strings.Join(parts, " ") + "]"
 	if len(result) <= 80 {
 		return result, nil
 	}
@@ -289,37 +279,29 @@ func (s *serializer) valueInline(v any) (string, error) {
 			return "{}", nil
 		}
 		keys := sortedKeys(m)
-		var sb strings.Builder
-		sb.WriteString("{")
+		parts := make([]string, 0, len(keys))
 		for _, k := range keys {
 			vStr, err := s.valueInline(m[k])
 			if err != nil {
 				return "", err
 			}
-			sb.WriteString(s.key(k))
-			sb.WriteString(":")
-			sb.WriteString(vStr)
-			sb.WriteString(" ")
+			parts = append(parts, s.key(k)+":"+vStr)
 		}
-		sb.WriteString("}")
-		return sb.String(), nil
+		return "{" + strings.Join(parts, " ") + "}", nil
 	}
 	if arr, ok := v.([]any); ok {
 		if len(arr) == 0 {
 			return "[]", nil
 		}
-		var sb strings.Builder
-		sb.WriteString("[")
+		parts := make([]string, 0, len(arr))
 		for _, elem := range arr {
 			vStr, err := s.valueInline(elem)
 			if err != nil {
 				return "", err
 			}
-			sb.WriteString(vStr)
-			sb.WriteString(" ")
+			parts = append(parts, vStr)
 		}
-		sb.WriteString("]")
-		return sb.String(), nil
+		return "[" + strings.Join(parts, " ") + "]", nil
 	}
 	return s.value(v, 0)
 }

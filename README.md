@@ -37,7 +37,7 @@ val, err := terse.Parse(out)
 
 ```
 # Inline object (keys are sorted alphabetically)
-{age:30 name:Alice }
+{age:30 name:Alice}
 
 # Block object
 name:Alice
@@ -45,10 +45,10 @@ age:30
 active:T
 
 # Inline array
-[1 2 3 ]
+[1 2 3]
 
 # Schema array (homogeneous records)
-#[id name score ]
+#[id name score]
   1 Alice 95
   2 Bob 87
 ```

@@ -97,11 +97,11 @@ func TestB1_QuotedString(t *testing.T) {
 // B2 – Objects
 // ---------------------------------------------------------------------------
 
-func TestB2_InlineObject_TrailingSpace(t *testing.T) {
-	// inline-obj = "{" *( key ":" value SP ) "}"
+func TestB2_InlineObject_Separator(t *testing.T) {
+	// inline-obj = "{" key ":" value *( SP key ":" value ) "}"
 	got := mustSerialize(t, map[string]any{"a": float64(1)})
-	if got != "{a:1 }" {
-		t.Errorf("want {a:1 } got %q", got)
+	if got != "{a:1}" {
+		t.Errorf("want {a:1} got %q", got)
 	}
 }
 
@@ -139,11 +139,11 @@ func TestB2_EmptyObject(t *testing.T) {
 // B3 – Arrays
 // ---------------------------------------------------------------------------
 
-func TestB3_InlineArray_TrailingSpace(t *testing.T) {
-	// inline-arr = "[" *( value SP ) "]"
+func TestB3_InlineArray_Separator(t *testing.T) {
+	// inline-arr = "[" value *( SP value ) "]"
 	got := mustSerialize(t, []any{float64(1), float64(2), float64(3)})
-	if got != "[1 2 3 ]" {
-		t.Errorf("want [1 2 3 ] got %q", got)
+	if got != "[1 2 3]" {
+		t.Errorf("want [1 2 3] got %q", got)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestB3_BlockArray_NoDash(t *testing.T) {
 // B4 – Schema Arrays
 // ---------------------------------------------------------------------------
 
-func TestB4_SchemaArray_TrailingSpace(t *testing.T) {
-	// header: #[k1 k2 ]   rows: v1 v2
+func TestB4_SchemaArray_Separator(t *testing.T) {
+	// header: #[k1 k2]   rows: v1 v2  (SP is separator, not terminator)
 	arr := []any{
 		map[string]any{"id": float64(1), "name": "Alice"},
 		map[string]any{"id": float64(2), "name": "Bob"},
@@ -200,12 +200,15 @@ func TestB4_SchemaArray_TrailingSpace(t *testing.T) {
 	got := mustSerialize(t, arr)
 	lines := strings.Split(got, "\n")
 	header := lines[0]
-	if !strings.HasSuffix(header, " ]") {
-		t.Errorf("schema header must end with ' ]', got: %q", header)
+	if strings.HasSuffix(header, " ]") {
+		t.Errorf("schema header must NOT end with ' ]', got: %q", header)
+	}
+	if !strings.HasSuffix(header, "]") {
+		t.Errorf("schema header must end with ']', got: %q", header)
 	}
 	for _, row := range lines[1:] {
-		if row != "" && !strings.HasSuffix(row, " ") {
-			t.Errorf("schema row must end with SP, got: %q", row)
+		if row != "" && strings.HasSuffix(row, " ") {
+			t.Errorf("schema row must NOT end with SP, got: %q", row)
 		}
 	}
 }
