@@ -103,7 +103,10 @@ func (s *serializer) object(m map[string]any, indent int) (string, error) {
 	if inline != "" {
 		return inline, nil
 	}
-	return s.blockObject(m, keys, indent)
+	if indent == 0 {
+		return s.blockObject(m, keys, indent)
+	}
+	return s.blockObjectBraced(m, keys, indent)
 }
 
 // inline-obj = "{" *( key ":" value SP ) "}"
@@ -142,6 +145,27 @@ func (s *serializer) blockObject(m map[string]any, keys []string, indent int) (s
 			lines = append(lines, s.key(k)+":"+vStr)
 		}
 	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// blockObjectBraced emits a {…}-wrapped block object for nested use.
+// Content is at same indentation as '{'; caller's indentBlock will shift both.
+func (s *serializer) blockObjectBraced(m map[string]any, keys []string, indent int) (string, error) {
+	var lines []string
+	lines = append(lines, "{")
+	for _, k := range keys {
+		vStr, err := s.value(m[k], indent+2)
+		if err != nil {
+			return "", err
+		}
+		if strings.Contains(vStr, "\n") {
+			lines = append(lines, s.key(k)+":")
+			lines = append(lines, indentBlock(vStr, 2))
+		} else {
+			lines = append(lines, s.key(k)+":"+vStr)
+		}
+	}
+	lines = append(lines, "}")
 	return strings.Join(lines, "\n"), nil
 }
 
@@ -324,11 +348,11 @@ func isSafeId(s string) bool {
 }
 
 func isSafeStart(r rune) bool {
-	return unicode.IsLetter(r) || r == '_'
+	return unicode.IsLetter(r) || r == '_' || r == '.' || r == '/'
 }
 
 func isSafeChar(r rune) bool {
-	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.'
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' || r == '/' || r == '@'
 }
 
 func quoteStr(v string) string {
@@ -388,6 +412,9 @@ type parser struct {
 }
 
 func newParser(src string) *parser {
+	// Normalize CRLF and bare CR to LF so the parser only sees \n
+	src = strings.ReplaceAll(src, "\r\n", "\n")
+	src = strings.ReplaceAll(src, "\r", "\n")
 	return &parser{src: []rune(src)}
 }
 
@@ -621,6 +648,8 @@ func (p *parser) parseValue() (any, error) {
 			return []any{}, nil
 		}
 		return p.parseArray(0)
+	case c == '#' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '[':
+		return p.parseSchemaArray(0)
 	default:
 		return p.parsePrimitive()
 	}
@@ -729,17 +758,51 @@ func (p *parser) parseBare() (string, error) {
 	return string(p.src[start:p.pos]), nil
 }
 
-// FIX: block-obj content is at same indent as '{', not indent+2.
-// After parsing, consume closing '}'.
+// peekContentIndent non-destructively skips past blank/comment lines from
+// the current position and returns the leading-space count of the first
+// real content line.  Used by parseObject to handle variable indentation.
+func (p *parser) peekContentIndent() int {
+	save := p.pos
+	defer func() { p.pos = save }()
+	for !p.eof() {
+		indent := 0
+		for p.pos < len(p.src) && p.src[p.pos] == ' ' {
+			indent++
+			p.pos++
+		}
+		if p.eof() {
+			return 0
+		}
+		if p.src[p.pos] == '\n' {
+			p.pos++ // blank line, keep scanning
+			continue
+		}
+		if p.src[p.pos] == '/' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '/' {
+			for !p.eof() && p.src[p.pos] != '\n' {
+				p.pos++
+			}
+			if !p.eof() {
+				p.pos++
+			}
+			continue
+		}
+		return indent
+	}
+	return 0
+}
+
+// FIX: block-obj content indent is detected dynamically so that objects
+// produced by JS/Python/Java (which indent content) are also handled.
 func (p *parser) parseObject(indent int) (any, error) {
 	p.pos++ // consume '{'
 	p.skipSpaces()
 	if p.eof() || p.ch() == '\n' {
-		// block object: content is at indent (same level as '{')
+		// block object: detect actual content indentation
 		if !p.eof() {
 			p.pos++
 		}
-		m, err := p.parseKVBlock(indent)
+		contentIndent := p.peekContentIndent()
+		m, err := p.parseKVBlock(contentIndent)
 		if err != nil {
 			return nil, err
 		}
@@ -749,10 +812,8 @@ func (p *parser) parseObject(indent int) (any, error) {
 		p.skipSpaces()
 		if !p.eof() && p.ch() == '}' {
 			p.pos++
-			p.skipToEOL()
-			if !p.eof() {
-				p.pos++
-			}
+			// Leave pos at the newline after '}'; callers consume it via
+			// skipBlankAndComments or skipToEOL+pos++ as appropriate.
 		} else {
 			p.pos = save
 		}
@@ -879,10 +940,18 @@ func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
 	}
 	p.pos++
 	p.skipToEOL()
+	// Save position of \n after header so we can restore cursor here if needed.
+	afterHeaderNL := p.pos
 	if !p.eof() {
 		p.pos++
 	}
 	var arr []any
+	// endOfLastLine tracks the position of \n just after the last consumed row.
+	// When we exit the loop (e.g., due to a KV pair on the next line) the caller
+	// (parseKVBlock inline branch) will call skipToEOL()+pos++, so we must leave
+	// the cursor at the \n of the last consumed row – not at the start of the
+	// next line – so that the caller's pos++ lands on the right line.
+	endOfLastLine := afterHeaderNL
 	for {
 		p.skipBlankAndComments()
 		if p.eof() {
@@ -906,10 +975,14 @@ func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
 			m[k] = val
 		}
 		p.skipToEOL()
+		endOfLastLine = p.pos // \n at end of this row
 		if !p.eof() {
 			p.pos++
 		}
 		arr = append(arr, m)
 	}
+	// Restore cursor to the \n after the last consumed row (or after header).
+	// This lets the caller's skipToEOL()+pos++ advance exactly one line.
+	p.pos = endOfLastLine
 	return arr, nil
 }
