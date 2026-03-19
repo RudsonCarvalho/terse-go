@@ -1,6 +1,8 @@
 # terse-go
 
-Go implementation of the TERSE serialization format.
+[![CI](https://github.com/RudsonCarvalho/terse-go/actions/workflows/ci.yml/badge.svg)](https://github.com/RudsonCarvalho/terse-go/actions/workflows/ci.yml)
+
+Go 1.21+ implementation of [TERSE](https://github.com/RudsonCarvalho/terse-format) — Token-Efficient Serialization for LLMs.
 
 TERSE is a compact, human-readable data format that supports:
 - Primitives: null (`~`), booleans (`T`/`F`), numbers, strings
