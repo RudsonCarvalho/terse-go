@@ -11,16 +11,12 @@ import (
 )
 
 // Serialize converts a Go value into TERSE format.
-// Supported types: nil, bool, float64, int*, uint*, string, []any, map[string]any
-// and nested combinations thereof.
 func Serialize(v any) (string, error) {
 	s := &serializer{}
 	return s.document(v)
 }
 
 // Parse converts a TERSE-formatted string into a Go value.
-// Return types mirror encoding/json: nil, bool, float64, string,
-// []any, map[string]any.
 func Parse(src string) (any, error) {
 	p := newParser(src)
 	return p.parseDocument()
@@ -100,7 +96,6 @@ func (s *serializer) object(m map[string]any, indent int) (string, error) {
 		return "{}", nil
 	}
 	keys := sortedKeys(m)
-	// try inline
 	inline, err := s.tryInlineObject(m, keys)
 	if err != nil {
 		return "", err
@@ -111,13 +106,11 @@ func (s *serializer) object(m map[string]any, indent int) (string, error) {
 	return s.blockObject(m, keys, indent)
 }
 
+// inline-obj = "{" *( key ":" value SP ) "}"
 func (s *serializer) tryInlineObject(m map[string]any, keys []string) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("{")
-	for i, k := range keys {
-		if i > 0 {
-			sb.WriteString(" ")
-		}
+	for _, k := range keys {
 		vStr, err := s.value(m[k], 0)
 		if err != nil {
 			return "", err
@@ -125,6 +118,7 @@ func (s *serializer) tryInlineObject(m map[string]any, keys []string) (string, e
 		sb.WriteString(s.key(k))
 		sb.WriteString(":")
 		sb.WriteString(vStr)
+		sb.WriteString(" ") // trailing SP after every k:v pair per spec
 	}
 	sb.WriteString("}")
 	result := sb.String()
@@ -155,12 +149,10 @@ func (s *serializer) slice(arr []any, indent int) (string, error) {
 	if len(arr) == 0 {
 		return "[]", nil
 	}
-	// check schema array eligibility
 	sk := schemaKeys(arr)
 	if sk != nil {
 		return s.schemaArray(arr, sk, indent)
 	}
-	// try inline
 	inline, err := s.tryInlineArray(arr)
 	if err != nil {
 		return "", err
@@ -194,11 +186,9 @@ func schemaKeys(arr []any) []string {
 				}
 			}
 		}
-		// all values must be primitive
 		for _, v := range m {
 			switch v.(type) {
 			case nil, bool, float64, int, int64, uint64, string:
-				// ok
 			default:
 				return nil
 			}
@@ -207,43 +197,44 @@ func schemaKeys(arr []any) []string {
 	return keys
 }
 
+// schema-arr = "#[" *( key SP ) "]" NEWLINE *( *SP *( value SP ) NEWLINE )
 func (s *serializer) schemaArray(arr []any, keys []string, indent int) (string, error) {
 	var sb strings.Builder
-	// header
+	// header: #[k1 k2 ]
 	sb.WriteString("#[")
-	sb.WriteString(strings.Join(keys, " "))
+	for _, k := range keys {
+		sb.WriteString(k)
+		sb.WriteString(" ") // SP after every key per spec
+	}
 	sb.WriteString("]\n")
-	// rows
+	// rows: v1 v2 \n
 	for _, elem := range arr {
 		m := elem.(map[string]any)
-		var parts []string
 		for _, k := range keys {
 			vStr, err := s.value(m[k], 0)
 			if err != nil {
 				return "", err
 			}
-			parts = append(parts, vStr)
+			sb.WriteString(vStr)
+			sb.WriteString(" ") // SP after every value per spec
 		}
-		sb.WriteString(strings.Join(parts, " "))
 		sb.WriteString("\n")
 	}
 	result := sb.String()
-	// trim trailing newline
 	return strings.TrimRight(result, "\n"), nil
 }
 
+// inline-arr = "[" *( value SP ) "]"
 func (s *serializer) tryInlineArray(arr []any) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("[")
-	for i, elem := range arr {
-		if i > 0 {
-			sb.WriteString(" ")
-		}
+	for _, elem := range arr {
 		vStr, err := s.value(elem, 0)
 		if err != nil {
 			return "", err
 		}
 		sb.WriteString(vStr)
+		sb.WriteString(" ") // trailing SP after every value per spec
 	}
 	sb.WriteString("]")
 	result := sb.String()
@@ -253,20 +244,23 @@ func (s *serializer) tryInlineArray(arr []any) (string, error) {
 	return "", nil
 }
 
+// block-arr = "[" NEWLINE 1*( indent value NEWLINE ) "]"
+// No dashes — elements are indented values, terminated by "]"
 func (s *serializer) blockArray(arr []any, indent int) (string, error) {
 	var lines []string
+	lines = append(lines, "[")
 	for _, elem := range arr {
 		vStr, err := s.value(elem, indent+2)
 		if err != nil {
 			return "", err
 		}
 		if strings.Contains(vStr, "\n") {
-			lines = append(lines, "-")
-			lines = append(lines, indentBlock(vStr, 2))
+			lines = append(lines, vStr)
 		} else {
-			lines = append(lines, "- "+vStr)
+			lines = append(lines, vStr)
 		}
 	}
+	lines = append(lines, "]")
 	return strings.Join(lines, "\n"), nil
 }
 
@@ -274,7 +268,6 @@ func isSafeId(s string) bool {
 	if s == "" {
 		return false
 	}
-	// reserved tokens
 	switch s {
 	case "~", "T", "F", "true", "false", "null", "Inf", "-Inf", "NaN":
 		return false
@@ -288,7 +281,6 @@ func isSafeId(s string) bool {
 			return false
 		}
 	}
-	// must not look like a number
 	if _, err := strconv.ParseFloat(s, 64); err == nil {
 		return false
 	}
@@ -405,7 +397,7 @@ func (p *parser) skipBlankAndComments() {
 		if p.isBlankOrComment() {
 			p.skipToEOL()
 			if !p.eof() {
-				p.pos++ // consume '\n'
+				p.pos++
 			}
 		} else {
 			break
@@ -436,21 +428,17 @@ func (p *parser) consumeIndent(n int) bool {
 	return true
 }
 
-// lineIsKV returns true if the current line (after consuming indent spaces)
-// looks like a key:value pair rather than a schema array row.
 func (p *parser) lineIsKV(indent int) bool {
 	save := p.pos
 	defer func() { p.pos = save }()
 	if !p.consumeIndent(indent) {
 		return false
 	}
-	// a key is either a quoted string or a safe identifier
 	if p.eof() {
 		return false
 	}
 	if p.ch() == '"' {
-		// quoted key - scan to closing quote
-		p.pos++ // skip opening "
+		p.pos++
 		for !p.eof() && p.ch() != '"' && p.ch() != '\n' {
 			if p.ch() == '\\' {
 				p.pos++
@@ -460,9 +448,8 @@ func (p *parser) lineIsKV(indent int) bool {
 		if p.eof() || p.ch() != '"' {
 			return false
 		}
-		p.pos++ // skip closing "
+		p.pos++
 	} else {
-		// bare identifier
 		if !isSafeStart(p.ch()) {
 			return false
 		}
@@ -479,7 +466,6 @@ func (p *parser) parseDocument() (any, error) {
 	if p.eof() {
 		return nil, nil
 	}
-	// If the document starts with KV lines at indent 0, parse as block object
 	if p.lineIsKV(0) {
 		return p.parseKVBlock(0)
 	}
@@ -508,13 +494,11 @@ func (p *parser) parseValueAtIndent(indent int) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		// after a scalar, check if next non-blank line is a kv pair at same indent -> block object
 		p.skipToEOL()
 		if !p.eof() {
-			p.pos++ // consume '\n'
+			p.pos++
 		}
 		p.skipBlankAndComments()
-		// if scalar was a key (the parseValue consumed "key:"), handled in parseKVBlock
 		return v, nil
 	}
 }
@@ -532,9 +516,7 @@ func (p *parser) parseKVBlock(indent int) (any, error) {
 		if !p.lineIsKV(indent) {
 			break
 		}
-		// consume indent
 		p.consumeIndent(indent)
-		// parse key
 		k, err := p.parseKey()
 		if err != nil {
 			return nil, err
@@ -544,12 +526,10 @@ func (p *parser) parseKVBlock(indent int) (any, error) {
 			return nil, fmt.Errorf("terse: expected ':' after key %q", k)
 		}
 		p.pos++ // consume ':'
-		// value: inline or block
 		p.skipSpaces()
 		if p.eof() || p.ch() == '\n' {
-			// block value on next lines
 			if !p.eof() {
-				p.pos++ // consume '\n'
+				p.pos++
 			}
 			p.skipBlankAndComments()
 			childIndent := p.peekIndent()
@@ -562,30 +542,26 @@ func (p *parser) parseKVBlock(indent int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			// if child is a map, it might be a block object
 			if _, ok := child.(map[string]any); !ok {
-				// check if subsequent lines form a kv block
 				if p.peekIndent() == childIndent && p.lineIsKV(childIndent) {
 					rest, err := p.parseKVBlock(childIndent)
 					if err != nil {
 						return nil, err
 					}
 					if rm, ok := rest.(map[string]any); ok {
-						// merge first kv into rest - actually child is the first value, not a kv
 						_ = rm
 					}
 				}
 			}
 			m[k] = child
 		} else {
-			// inline value
 			val, err := p.parseValue()
 			if err != nil {
 				return nil, err
 			}
 			p.skipToEOL()
 			if !p.eof() {
-				p.pos++ // consume '\n'
+				p.pos++
 			}
 			m[k] = val
 		}
@@ -645,7 +621,7 @@ func (p *parser) parsePrimitive() (any, error) {
 }
 
 func (p *parser) parseQuotedString() (string, error) {
-	p.pos++ // consume opening "
+	p.pos++
 	var sb strings.Builder
 	for {
 		if p.eof() || p.ch() == '\n' {
@@ -661,8 +637,7 @@ func (p *parser) parseQuotedString() (string, error) {
 			p.pos++
 			continue
 		}
-		// escape sequence
-		p.pos++ // consume backslash
+		p.pos++
 		if p.eof() {
 			return "", fmt.Errorf("terse: unterminated escape")
 		}
@@ -680,7 +655,6 @@ func (p *parser) parseQuotedString() (string, error) {
 		case 't':
 			sb.WriteByte('\t')
 		case 'u':
-			// read 4 hex digits
 			if p.pos+4 > len(p.src) {
 				return "", fmt.Errorf("terse: short \\u escape")
 			}
@@ -724,13 +698,11 @@ func (p *parser) parseObject(indent int) (any, error) {
 	p.pos++ // consume '{'
 	p.skipSpaces()
 	if p.eof() || p.ch() == '\n' {
-		// block object: lines at indent+2
 		if !p.eof() {
-			p.pos++ // consume '\n'
+			p.pos++
 		}
 		return p.parseKVBlock(indent + 2)
 	}
-	// inline object
 	m := map[string]any{}
 	for {
 		p.skipSpaces()
@@ -749,7 +721,7 @@ func (p *parser) parseObject(indent int) (any, error) {
 		if p.eof() || p.ch() != ':' {
 			return nil, fmt.Errorf("terse: expected ':' after key %q", k)
 		}
-		p.pos++ // consume ':'
+		p.pos++
 		val, err := p.parseValue()
 		if err != nil {
 			return nil, err
@@ -759,13 +731,15 @@ func (p *parser) parseObject(indent int) (any, error) {
 	return m, nil
 }
 
+// block-arr = "[" NEWLINE 1*( indent value NEWLINE ) "]"
+// No dash prefix — elements are plain indented values.
 func (p *parser) parseArray(indent int) (any, error) {
 	p.pos++ // consume '['
 	p.skipSpaces()
 	if p.eof() || p.ch() == '\n' {
 		// block array
 		if !p.eof() {
-			p.pos++ // consume '\n'
+			p.pos++
 		}
 		var arr []any
 		for {
@@ -773,23 +747,27 @@ func (p *parser) parseArray(indent int) (any, error) {
 			if p.eof() {
 				break
 			}
+			// closing ']' at any indent level
+			save := p.pos
+			p.skipSpaces()
+			if !p.eof() && p.ch() == ']' {
+				p.pos++
+				break
+			}
+			p.pos = save
+
 			lineIndent := p.peekIndent()
 			if lineIndent < indent+2 {
 				break
 			}
 			p.consumeIndent(lineIndent)
-			if p.ch() != '-' {
-				break
-			}
-			p.pos++ // consume '-'
-			p.skipSpaces()
 			val, err := p.parseValue()
 			if err != nil {
 				return nil, err
 			}
 			p.skipToEOL()
 			if !p.eof() {
-				p.pos++ // consume '\n'
+				p.pos++
 			}
 			arr = append(arr, val)
 		}
@@ -816,9 +794,7 @@ func (p *parser) parseArray(indent int) (any, error) {
 }
 
 func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
-	// consume '#['
-	p.pos += 2
-	// read header keys until ']'
+	p.pos += 2 // consume '#['
 	var keys []string
 	for {
 		p.skipSpaces()
@@ -837,9 +813,8 @@ func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
 	p.pos++ // consume ']'
 	p.skipToEOL()
 	if !p.eof() {
-		p.pos++ // consume '\n'
+		p.pos++
 	}
-	// read rows
 	var arr []any
 	for {
 		p.skipBlankAndComments()
@@ -850,7 +825,6 @@ func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
 		if lineIndent < headerIndent {
 			break
 		}
-		// stop if this line is a kv pair (not a row)
 		if p.lineIsKV(lineIndent) {
 			break
 		}
@@ -866,7 +840,7 @@ func (p *parser) parseSchemaArray(headerIndent int) (any, error) {
 		}
 		p.skipToEOL()
 		if !p.eof() {
-			p.pos++ // consume '\n'
+			p.pos++
 		}
 		arr = append(arr, m)
 	}

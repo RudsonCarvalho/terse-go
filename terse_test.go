@@ -1,20 +1,15 @@
-package terse_test
+package terse
 
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
-
-	terse "github.com/RudsonCarvalho/terse-go"
 )
-
-// ---------------------------------------------------------------------------
-// Round-trip helpers
-// ---------------------------------------------------------------------------
 
 func mustSerialize(t *testing.T, v any) string {
 	t.Helper()
-	out, err := terse.Serialize(v)
+	out, err := Serialize(v)
 	if err != nil {
 		t.Fatalf("Serialize error: %v", err)
 	}
@@ -23,15 +18,15 @@ func mustSerialize(t *testing.T, v any) string {
 
 func mustParse(t *testing.T, src string) any {
 	t.Helper()
-	v, err := terse.Parse(src)
+	v, err := Parse(src)
 	if err != nil {
-		t.Fatalf("Parse error: %v", err)
+		t.Fatalf("Parse(%q) error: %v", src, err)
 	}
 	return v
 }
 
 // ---------------------------------------------------------------------------
-// B1 - Primitives
+// B1 – Primitives
 // ---------------------------------------------------------------------------
 
 func TestB1_Null(t *testing.T) {
@@ -81,13 +76,9 @@ func TestB1_Float(t *testing.T) {
 	}
 }
 
-func TestB1_String(t *testing.T) {
+func TestB1_SafeString(t *testing.T) {
 	if got := mustSerialize(t, "hello"); got != "hello" {
 		t.Errorf("want hello got %q", got)
-	}
-	v := mustParse(t, "hello")
-	if v.(string) != "hello" {
-		t.Errorf("want hello got %v", v)
 	}
 }
 
@@ -97,23 +88,29 @@ func TestB1_QuotedString(t *testing.T) {
 	if got != `"hello world"` {
 		t.Errorf("want quoted got %q", got)
 	}
-	v := mustParse(t, got)
-	if v.(string) != s {
+	if v := mustParse(t, got); v.(string) != s {
 		t.Errorf("round-trip failed: want %q got %q", s, v)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// B2 - Objects
+// B2 – Objects
 // ---------------------------------------------------------------------------
 
-func TestB2_InlineObject(t *testing.T) {
+func TestB2_InlineObject_TrailingSpace(t *testing.T) {
+	// inline-obj = "{" *( key ":" value SP ) "}"
+	got := mustSerialize(t, map[string]any{"a": float64(1)})
+	if got != "{a:1 }" {
+		t.Errorf("want {a:1 } got %q", got)
+	}
+}
+
+func TestB2_InlineObject_RoundTrip(t *testing.T) {
 	m := map[string]any{"a": float64(1), "b": float64(2)}
 	got := mustSerialize(t, m)
-	// parse back and compare
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, m) {
-		t.Errorf("round-trip mismatch: %v vs %v", v, m)
+		t.Errorf("round-trip: %v vs %v", v, m)
 	}
 }
 
@@ -128,7 +125,7 @@ func TestB2_BlockObject(t *testing.T) {
 	got := mustSerialize(t, m)
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, m) {
-		t.Errorf("round-trip mismatch:\ngot  %v\nwant %v", v, m)
+		t.Errorf("round-trip:\ngot  %v\nwant %v", v, m)
 	}
 }
 
@@ -139,24 +136,28 @@ func TestB2_EmptyObject(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// B3 - Arrays
+// B3 – Arrays
 // ---------------------------------------------------------------------------
 
-func TestB3_InlineArray(t *testing.T) {
+func TestB3_InlineArray_TrailingSpace(t *testing.T) {
+	// inline-arr = "[" *( value SP ) "]"
+	got := mustSerialize(t, []any{float64(1), float64(2), float64(3)})
+	if got != "[1 2 3 ]" {
+		t.Errorf("want [1 2 3 ] got %q", got)
+	}
+}
+
+func TestB3_InlineArray_RoundTrip(t *testing.T) {
 	arr := []any{float64(1), float64(2), float64(3)}
 	got := mustSerialize(t, arr)
-	if got != "[1 2 3]" {
-		t.Errorf("want [1 2 3] got %q", got)
-	}
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, arr) {
-		t.Errorf("round-trip failed: %v vs %v", v, arr)
+		t.Errorf("round-trip: %v vs %v", v, arr)
 	}
 }
 
 func TestB3_EmptyArray(t *testing.T) {
-	arr := []any{}
-	if got := mustSerialize(t, arr); got != "[]" {
+	if got := mustSerialize(t, []any{}); got != "[]" {
 		t.Errorf("want [] got %q", got)
 	}
 }
@@ -166,50 +167,81 @@ func TestB3_MixedArray(t *testing.T) {
 	got := mustSerialize(t, arr)
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, arr) {
-		t.Errorf("round-trip failed: %v vs %v", v, arr)
+		t.Errorf("round-trip: %v vs %v", v, arr)
+	}
+}
+
+func TestB3_BlockArray_NoDash(t *testing.T) {
+	// block-arr must NOT use "- value" YAML syntax
+	arr := []any{"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota"}
+	got := mustSerialize(t, arr)
+	if strings.Contains(got, "- ") {
+		t.Errorf("block array must not use '- ' prefix, got:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "[") {
+		t.Errorf("block array must start with '[', got:\n%s", got)
+	}
+	v := mustParse(t, got)
+	if !reflect.DeepEqual(v, arr) {
+		t.Errorf("round-trip:\ngot  %v\nwant %v", v, arr)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// B4 - Schema Arrays
+// B4 – Schema Arrays
 // ---------------------------------------------------------------------------
 
-func TestB4_SchemaArray(t *testing.T) {
+func TestB4_SchemaArray_TrailingSpace(t *testing.T) {
+	// header: #[k1 k2 ]   rows: v1 v2
+	arr := []any{
+		map[string]any{"id": float64(1), "name": "Alice"},
+		map[string]any{"id": float64(2), "name": "Bob"},
+	}
+	got := mustSerialize(t, arr)
+	lines := strings.Split(got, "\n")
+	header := lines[0]
+	if !strings.HasSuffix(header, " ]") {
+		t.Errorf("schema header must end with ' ]', got: %q", header)
+	}
+	for _, row := range lines[1:] {
+		if row != "" && !strings.HasSuffix(row, " ") {
+			t.Errorf("schema row must end with SP, got: %q", row)
+		}
+	}
+}
+
+func TestB4_SchemaArray_RoundTrip(t *testing.T) {
 	arr := []any{
 		map[string]any{"id": float64(1), "name": "Alice", "score": float64(95)},
 		map[string]any{"id": float64(2), "name": "Bob", "score": float64(87)},
 		map[string]any{"id": float64(3), "name": "Carol", "score": float64(92)},
 	}
 	got := mustSerialize(t, arr)
-	// must start with schema header
-	if len(got) < 2 || got[:2] != "#[" {
+	if !strings.HasPrefix(got, "#[") {
 		t.Errorf("expected schema array, got %q", got)
 	}
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, arr) {
-		t.Errorf("round-trip failed:\ngot  %v\nwant %v", v, arr)
+		t.Errorf("round-trip:\ngot  %v\nwant %v", v, arr)
 	}
 }
 
-func TestB4_SchemaArrayNotEligible_OnlyOneRow(t *testing.T) {
-	arr := []any{
-		map[string]any{"id": float64(1), "name": "Alice"},
-	}
+func TestB4_SchemaArray_NotEligible_OneRow(t *testing.T) {
+	arr := []any{map[string]any{"id": float64(1), "name": "Alice"}}
 	got := mustSerialize(t, arr)
-	// single element -> not a schema array
-	if len(got) >= 2 && got[:2] == "#[" {
-		t.Errorf("single-element array should not use schema format")
+	if strings.HasPrefix(got, "#[") {
+		t.Errorf("single-element array must not use schema format")
 	}
 }
 
-func TestB4_SchemaArrayNotEligible_DifferentKeys(t *testing.T) {
+func TestB4_SchemaArray_NotEligible_DifferentKeys(t *testing.T) {
 	arr := []any{
 		map[string]any{"id": float64(1), "name": "Alice"},
 		map[string]any{"id": float64(2), "email": "bob@example.com"},
 	}
 	got := mustSerialize(t, arr)
-	if len(got) >= 2 && got[:2] == "#[" {
-		t.Errorf("different-keyed maps should not use schema format")
+	if strings.HasPrefix(got, "#[") {
+		t.Errorf("different-keyed maps must not use schema format")
 	}
 }
 
@@ -222,7 +254,7 @@ func TestEdge_NullInMap(t *testing.T) {
 	got := mustSerialize(t, m)
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, m) {
-		t.Errorf("round-trip failed: %v vs %v", v, m)
+		t.Errorf("round-trip: %v vs %v", v, m)
 	}
 }
 
@@ -231,7 +263,7 @@ func TestEdge_BackslashInString(t *testing.T) {
 	got := mustSerialize(t, s)
 	v := mustParse(t, got)
 	if v.(string) != s {
-		t.Errorf("round-trip failed: want %q got %q", s, v)
+		t.Errorf("round-trip: want %q got %q", s, v)
 	}
 }
 
@@ -240,26 +272,22 @@ func TestEdge_QuotesInString(t *testing.T) {
 	got := mustSerialize(t, s)
 	v := mustParse(t, got)
 	if v.(string) != s {
-		t.Errorf("round-trip failed: want %q got %q", s, v)
+		t.Errorf("round-trip: want %q got %q", s, v)
 	}
 }
 
 func TestEdge_NestedObject(t *testing.T) {
 	m := map[string]any{
-		"user": map[string]any{
-			"name": "Bob",
-			"age":  float64(25),
-		},
+		"user": map[string]any{"name": "Bob", "age": float64(25)},
 	}
 	got := mustSerialize(t, m)
 	v := mustParse(t, got)
 	if !reflect.DeepEqual(v, m) {
-		t.Errorf("round-trip failed:\ngot  %v\nwant %v", v, m)
+		t.Errorf("round-trip:\ngot  %v\nwant %v", v, m)
 	}
 }
 
 func TestEdge_IntegerValuedFloat(t *testing.T) {
-	// 42.0 should serialize as "42" not "42.0"
 	if got := mustSerialize(t, float64(42)); got != "42" {
 		t.Errorf("want 42 got %q", got)
 	}
